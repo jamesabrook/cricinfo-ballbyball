@@ -12,7 +12,7 @@ library(data.table)
 ############
 # Setup 
 ############
-p <- as.integer(4008)
+p <- as.integer(4010)
 driver <- rsDriver(browser=c("chrome"), port = p, geckover = NULL, chromever = "92.0.4515.43")
 remDr <- driver[["client"]]
 # remDr$open()
@@ -388,8 +388,8 @@ scrapeTheHundred <- function(x, index) {
     
     #New logic for when there is a gap between end_row for a batsman and start_row for their replacement
     
-    w <- Check %>%
-      filter(event == "W"& grepl("run out", wicketDesc)) %>%
+    w <- match %>%
+      filter(event == "W" & grepl("run out", wicketDesc)) %>%
       select(innings, row)
     
     partnerships2 <- merge(partnerships, partnerships %>% select(innings, start_row_comp=start_row, end_row_comp=end_row), by="innings") %>%
@@ -402,8 +402,12 @@ scrapeTheHundred <- function(x, index) {
       ungroup() %>%
       left_join(w, by="innings") %>%
       group_by(innings, batsman) %>%
-      mutate(test1 = cumsum(end_row < row),
+      mutate(diff2 = row - start_row,
+             test1 = cumsum(end_row < row),
              test2 = cumsum(start_row > row)) %>%
+      group_by(row) %>%
+      filter(!min(abs(diff2)) <= 1 & (abs(diff2)==min(abs(diff2)) | diff2 > 0)) %>%
+      ungroup() %>%
       filter(test1 == 1 | test2 == max(test2)) %>%
       slice(1) %>%
       mutate(start_row = ifelse(start_row > row, row + 1, start_row),
