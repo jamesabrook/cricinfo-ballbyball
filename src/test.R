@@ -12,7 +12,7 @@ library(data.table)
 ############
 # Setup 
 ############
-p <- as.integer(4010)
+p <- as.integer(4012)
 driver <- rsDriver(browser=c("chrome"), port = p, geckover = NULL, chromever = "92.0.4515.43")
 remDr <- driver[["client"]]
 # remDr$open()
@@ -32,8 +32,17 @@ t <- raw %>%
   data_frame(.) %>%
   filter(grepl("full-scorecard", .) & grepl("the-hundred-women", .) & !duplicated(.))
 
-x <- t %>% slice(12) %>% as.character(.)
+x <- t %>% slice(3) %>% as.character(.)
 index <- 1
+
+cumrank <- function(x, k){
+  n <- length(x)
+  y <- rep(NA, n)
+  for (i in (k+1):n){
+    y[i] = sort(x[1:i])[i - 2]     
+  }
+  y
+}
 
 
 scrapeTheHundred <- function(x, index) {
@@ -73,7 +82,7 @@ scrapeTheHundred <- function(x, index) {
     #Retain batsman rows and Extras/Total lines
     #Removes others
     summary <- summary %>%
-      filter(Batsman != "" & !Batsman %like% "Fall of" & !Batsman %like% "Did not bat")
+      filter(Batsman != "" & !Batsman %like% "Fall of" & !Batsman %like% "Did not bat") 
     
     url <- gsub("full-scorecard", "ball-by-ball-commentary", url)
     
@@ -96,7 +105,7 @@ scrapeTheHundred <- function(x, index) {
     
     # CricInfo now has an annoying popup asking if we want live updates. 
     # This is a flag of if we have dismissed it or not
-    #Wait until the button appears to dismiss it and then click it
+    # Wait until the button appears to dismiss it and then click it
     while (notNowClicked != TRUE & index == 1) {
       notNowUpdates <- try(remDr$findElement(using = 'xpath', '//*[@id="wzrk-cancel"]'),
                            silent = TRUE)
@@ -352,6 +361,10 @@ scrapeTheHundred <- function(x, index) {
         grepl("W", event) ~ 1,
         TRUE ~ 0
       ),
+      bowling_wickets = case_when(
+        grepl("W", event) & !grepl("run out", wicketDesc) ~ 1,
+        TRUE ~ 0
+      ),
       extras = case_when(
         grepl("nb", event) ~ 2,
         event %in% c("•", "W", "1", "2", "3", "4", "5", "6") ~ 0,
@@ -365,59 +378,77 @@ scrapeTheHundred <- function(x, index) {
       )) %>%
       group_by(innings) %>%
       mutate(row = seq(1:n())) 
-      
     
+    #Wickets to fall in the match
+    w <- match %>%
+      filter(event == "W") %>%
+      select(innings, row, batsman, wickets, wicketDesc)
+    
+    #We can use the summary to check what the wickets name is!
+    ballsFaced <- match %>%
+      group_by(innings, batsman) %>%
+      summarise(Innings = first(innings),
+                Runs = sum(batting_runs),
+                Balls = sum(!grepl("w", event)),
+                `4s` = sum(batting_runs==4),
+                `6s` = sum(batting_runs==6))
+    
+    summary <- summary %>%
+      group_by(Innings) %>%
+      mutate(battingOrder = seq(1:n()))
+    
+    summary2 <- merge(ballsFaced, summary, by=c("Innings", "Runs", "Balls", "4s", "6s")) %>%
+      mutate(Batsman = gsub("\\(c\\)|†", "", Batsman),
+             Batsman = trimws(gsub("  ", " ", Batsman)),
+             # test = substr(Batsman, nchar(Batsman), nchar(Batsman)),
+             # test2 = grepl("[A-z]", test),
+             Batsman = ifelse(grepl("[A-z]", substr(Batsman, nchar(Batsman), nchar(Batsman))), Batsman, substr(Batsman, 1, nchar(Batsman) - 1))) %>%
+      select(innings, batsman, Batsman, battingOrder) %>%
+      group_by(innings, batsman) %>%
+      mutate(rows = n()) %>%
+      rowwise() %>%
+      filter(rows == 1 | grepl(batsman, Batsman))
+    
+    w2 <- merge(w, summary2, by="innings")  %>%
+      rowwise() %>%
+      mutate(d = grepl(Batsman, wicketDesc)) %>%
+      filter(d) %>%
+      group_by(innings) %>%
+      mutate(wicketOrder = seq(1:n())) %>%
+      select(innings, end_row=row, dismissed = batsman.y, wicketOrder) 
+      
     partnerships <- match %>%
       group_by(innings, batsman) %>%
       summarise(start_row = min(row),
-                end_row = max(row)) %>%
-      left_join(match %>% select(innings, batsman, wickets, row), by=c("innings", "batsman", "end_row"="row")) %>%
-      group_by(innings) %>% 
-      arrange(innings, start_row) %>%
-      mutate(end_row2 = cummax(end_row),
-             wickets2 = ifelse(cummax(end_row)==end_row, wickets, 0)) %>%
-      #Need some logic in here to detect when a wicket falls that is of the non-striker.
-      #Currently this logic indirectly assumes that the last ball you faced is when you got out!
-      mutate(start_row = ifelse(start_row > lag(end_row) & !is.na(lag(end_row)) & lag(wickets) == 1, lag(end_row) + 1, start_row),
-             start_row = ifelse(start_row > lag(end_row2, 2) & !is.na(lag(end_row2, 2)) & lag(wickets2, 2) == 1, lag(end_row2, 2) + 1, start_row)) %>%
-      arrange(innings, desc(end_row)) %>%
-      mutate(end_row = ifelse(seq(1:n()) == 2, lag(end_row), end_row),
-             end_row = ifelse(end_row < lag(start_row) - 1 & !is.na(lag(start_row)), lag(start_row) - 1, end_row)) %>%
-      arrange(innings, start_row) %>%
-      mutate(start_row = ifelse(seq(1:n()) == 2, lag(start_row),start_row))
-    
-    #New logic for when there is a gap between end_row for a batsman and start_row for their replacement
-    
-    w <- match %>%
-      filter(event == "W" & grepl("run out", wicketDesc)) %>%
-      select(innings, row)
-    
-    partnerships2 <- merge(partnerships, partnerships %>% select(innings, start_row_comp=start_row, end_row_comp=end_row), by="innings") %>%
-      mutate(diff = start_row - end_row_comp) %>%
+                first_faced = min(row),
+                last_faced = max(row)) %>%
+      left_join(w2, by=c("innings", "batsman"="dismissed")) %>%
+      left_join(summary2, by=c("innings", "batsman")) %>%
       group_by(innings) %>%
-      filter(diff > 1 & end_row!=max(end_row) | wickets == 0 & start_row==start_row_comp & end_row==end_row_comp & end_row!=max(end_row)) %>%
-      arrange(innings, batsman, diff) %>%
-      group_by(innings, batsman) %>%
-      slice(1) %>%
-      ungroup() %>%
-      left_join(w, by="innings") %>%
-      group_by(innings, batsman) %>%
-      mutate(diff2 = row - start_row,
-             test1 = cumsum(end_row < row),
-             test2 = cumsum(start_row > row)) %>%
-      group_by(row) %>%
-      filter(!min(abs(diff2)) <= 1 & (abs(diff2)==min(abs(diff2)) | diff2 > 0)) %>%
-      ungroup() %>%
-      filter(test1 == 1 | test2 == max(test2)) %>%
-      slice(1) %>%
-      mutate(start_row = ifelse(start_row > row, row + 1, start_row),
-             end_row = ifelse(end_row < row, row, end_row)) %>%
-      select(names(partnerships))
+      mutate(end_row = ifelse(is.na(end_row), max(last_faced), end_row)) %>%
+      arrange(innings, battingOrder) %>%
+      mutate(start_row = ifelse(is.na(lag(start_row, 2)), 1, cumrank(end_row, 2) + 1),
+             prev_end_row = lag(end_row), 
+             prev_end_row2 = lag(end_row, 2),
+             cum_end_row_max = lag(cummax(end_row))) %>%
+      # rowwise() %>%
+      # mutate(cum_end_row = min(end_row, prev_end_row, prev_end_row2, na.rm=T)),
+      #        start_row = case_when(
+      #          start_row == 1 ~ 1,
+      #          start_row > cum_end_row_max ~ cum_end_row + 1,
+      #          TRUE ~ start_row
+      #        )) %>%
+      group_by(innings) %>%
+      mutate(prev_start_row = lag(start_row),
+             start_row = ifelse(start_row == prev_start_row & start_row != 1, prev_start_row + 1, start_row)) %>%
+      select(innings, batsman, start_row, first_faced, last_faced, end_row, Batsman, battingOrder) %>%
+      arrange(innings, desc(end_row)) %>%
+      mutate(end_row = ifelse(seq(1:n()) == 2, lag(end_row), end_row)) %>%
+      arrange(innings, battingOrder)
     
-    partnerships <- rbind(partnerships %>% anti_join(partnerships2, by=c("innings", "batsman")), partnerships2) %>%
-      arrange(innings, start_row)
     
-    partnerships <- partnerships %>%
+    
+    partnerships2 <- partnerships %>%
       left_join(partnerships, by=c("innings")) %>%
       filter(batsman.x != batsman.y & end_row.x >= start_row.y & start_row.x <= start_row.y) %>%
       group_by(innings, batsman.x, batsman.y) %>%
@@ -429,15 +460,11 @@ scrapeTheHundred <- function(x, index) {
       filter(seq(1:n()) != 2)
     
     match2 <- match %>%
-      left_join(partnerships, by=c("innings")) %>%
+      left_join(partnerships2, by=c("innings")) %>%
       filter(row >= start_row & row <= end_row) %>%
       mutate(non_striker = ifelse(batsman == batsman1, batsman2, batsman1)) %>%
-      rowwise() %>%
-      mutate(dismissed = case_when(
-        is.na(wicketDesc) ~ "",
-        grepl(batsman1, wicketDesc) ~ batsman1, 
-        grepl(batsman2, wicketDesc) ~ batsman2,
-        TRUE ~ "Check"))
+      left_join(w2, by=c("innings", "row"="end_row")) %>%
+      left_join(summary2, by=c("innings", "batsman"))
   } else {
     summary <- NA
     match2 <- NA
@@ -464,120 +491,50 @@ allBalls <- rbindlist(test[index])
 
 
 
-Scorecard <- test[[23]]
-Check <- test[[24]] %>% ungroup()
-
-partnerships <- Check %>%
-  group_by(innings, batsman) %>%
-  summarise(start_row = min(row),
-            end_row = max(row)) %>%
-  left_join(Check %>% select(innings, batsman, wickets, row), by=c("innings", "batsman", "end_row"="row")) %>%
-  group_by(innings) %>% 
-  arrange(innings, start_row) %>%
-  mutate(end_row2 = cummax(end_row),
-         wickets2 = ifelse(cummax(end_row)==end_row, wickets, 0)) %>%
-  #Need some logic in here to detect when a wicket falls that is of the non-striker.
-  #Currently this logic indirectly assumes that the last ball you faced is when you got out!
-  mutate(start_row = ifelse(start_row > lag(end_row) & !is.na(lag(end_row)) & lag(wickets) == 1, lag(end_row) + 1, start_row),
-         start_row = ifelse(start_row > lag(end_row2, 2) & !is.na(lag(end_row2, 2)) & lag(wickets2, 2) == 1, lag(end_row2, 2) + 1, start_row)) %>%
-  arrange(innings, desc(end_row)) %>%
-  mutate(end_row = ifelse(seq(1:n()) == 2, lag(end_row), end_row),
-         end_row = ifelse(end_row < lag(start_row) - 1, lag(start_row) - 1, end_row)) %>%
-  arrange(innings, start_row) %>%
-  mutate(start_row = ifelse(seq(1:n()) == 2, lag(start_row),start_row))
-
-
-wickets <- Check %>%
-  filter(event == "W" & grepl("run out", wicketDesc)) %>%
-  select(innings, row)
-
-partnerships2 <- merge(partnerships, partnerships %>% select(innings, start_row_comp=start_row, end_row_comp=end_row), by="innings") %>%
-  mutate(diff = start_row - end_row_comp) %>%
-  filter(diff > 1 & !is.na(end_row) | wickets == 0 & start_row==start_row_comp & end_row==end_row_comp) %>%
-  arrange(innings, batsman, diff) %>%
-  group_by(innings, batsman) %>%
-  slice(1) %>%
-  ungroup() %>%
-  left_join(wickets, by="innings") %>%
-  mutate(test1 = cumsum(end_row < row),
-         test2 = cumsum(start_row > row)) %>%
-  filter(test1 == 1 | test2 == max(test2)) %>%
-  group_by(innings, batsman) %>%
-  slice(1) %>%
-  mutate(start_row = ifelse(start_row > row, row + 1, start_row),
-         end_row = ifelse(end_row < row, row, end_row)) %>%
-  select(names(partnerships))
-
-partnerships <- rbind(partnerships %>% anti_join(partnerships2, by=c("innings", "batsman")), partnerships2) %>%
-  arrange(innings, start_row)
-
-partnerships <- partnerships %>%
-  left_join(partnerships, by=c("innings")) %>%
-  filter(batsman.x != batsman.y & end_row.x >= start_row.y & start_row.x <= start_row.y) %>%
-  group_by(innings, batsman.x, batsman.y) %>%
-  mutate(start_row = max(start_row.x, start_row.y),
-         end_row = min(end_row.x, end_row.y)) %>%
-  select(innings, batsman1 = batsman.x, batsman2 = batsman.y, start_row, end_row) %>%
-  group_by(innings) %>%
-  arrange(innings, start_row) %>%
-  filter(seq(1:n()) != 2)
-
-
-
-match2 <- Check %>%
-  select(-c("start_row", "end_row", "batsman1", "batsman2", "non_striker", "dismissed")) %>%
-  left_join(partnerships2, by=c("innings")) %>%
-  filter(row >= start_row & row <= end_row) %>%
-  mutate(non_striker = ifelse(batsman == batsman1, batsman2, batsman1)) %>%
-  group_by(innings, ball) %>%
-  mutate(dismissed = case_when(
-    is.na(wicketDesc) ~ "",
-    grepl(batsman1, wicketDesc) ~ batsman1, 
-    TRUE ~ batsman2))
-
-grepl(Cleary$batsman2, Cleary$wicketDesc)
-
-testRunOut <- allBalls %>%
-  filter(dismissed != batsman & dismissed != "")
-
 summaryTheHundred <- function(x, type=c("batting", "bowling", "innings")) {
   if (!is.na(x)) {
     if (type == "batting") {
       #Batting summary by innings (runs, balls, 4s, 6s, strike rate, not-out)
       summary <- x %>%
-        group_by(innings, batsman) %>%
+        group_by(match, innings, batsman, Batsman) %>%
         summarise(Runs = sum(batting_runs),
                   Balls = sum(!grepl("w", event)),
                   `4s` = sum(batting_runs==4),
                   `6s` = sum(batting_runs==6),
-                  SR = round(Runs/Balls*100, 2))
+                  SR = round(Runs/Balls*100, 2)) %>%
+        mutate(`100` = sum(Runs >= 100),
+               `50` = sum(Runs >= 50 & Runs < 100),
+               `0` = sum(Runs == 0)) %>%
+        group_by(batsman) %>%
+        mutate(HS = max(Runs))
       
       wickets <- x %>%
-        group_by(innings, dismissed) %>%
+        group_by(match, innings, dismissed) %>%
         summarise() %>%
         mutate(out = 1)
       
       summary <- summary %>%
-        left_join(wickets, by=c("innings", "batsman"="dismissed")) %>%
+        left_join(wickets, by=c("match", "innings", "batsman"="dismissed")) %>%
         mutate(out = ifelse(is.na(out), 0, 1),
+               HSout = ifelse(Runs==HS, out, 0),
                NotOut = 1 - out) %>%
         select(-out)
       
       #Now we have the stats for each batsman we want to order them correctly
       summary <- x %>%
-        group_by(innings, batsman) %>%
+        group_by(match, innings, batsman, Batsman) %>%
         summarise(start_row = min(row)) %>%
         arrange(innings, start_row) %>%
-        select(innings, batsman) %>%
-        left_join(summary, by=c("innings", "batsman"))
+        select(match, innings, batsman, Batsman) %>%
+        left_join(summary, by=c("match", "innings", "batsman", "Batsman"))
     } else if (type == "bowling") {
       #Bowling summary by innings (balls, dots, runs, wickets, economy, 4s,6s, wides, no balls)
       summary <- x %>%
-        group_by(innings, bowler) %>%
+        group_by(match, innings, bowler) %>%
         summarise(Balls = sum(!grepl("w", event) & !grepl("nb", event) & !grepl("n-l", event)),
-                  Dots = sum(runs == 0),
+                  Dots = sum(bowling_runs == 0),
                   Runs = sum(bowling_runs),
-                  Wickets = sum(grepl("W", event)),
+                  Wickets = sum(bowling_wickets),
                   RPB = round(Runs / Balls, 2),
                   `4s` = sum(batting_runs == 4),
                   `6s` = sum(batting_runs == 6),
@@ -587,15 +544,15 @@ summaryTheHundred <- function(x, type=c("batting", "bowling", "innings")) {
       
       #Now we have the stats for each bowler we want to order them correctly
       summary <- x %>%
-        group_by(innings, bowler) %>%
+        group_by(match, innings, bowler) %>%
         summarise(start_row = min(row)) %>%
         arrange(innings, start_row) %>%
-        select(innings, bowler) %>%
-        left_join(summary, by=c("innings", "bowler"))
+        select(match, innings, bowler) %>%
+        left_join(summary, by=c("match", "innings", "bowler"))
     } else {
       #Overall innings scores (runs/wickets)
       summary <- x %>%
-        group_by(innings) %>%
+        group_by(match, innings) %>%
         summarise(runs = sum(runs),
                   wickets = sum(wickets))
     }
@@ -605,6 +562,33 @@ summaryTheHundred <- function(x, type=c("batting", "bowling", "innings")) {
   return(summary)
 }
 
-test2 <- summaryTheHundred(test[[24]] %>% ungroup(), "batting")
 
 
+
+test2 <- lapply(test[index], summaryTheHundred, "batting")
+test3 <- lapply(test[index], summaryTheHundred, "bowling")
+test4 <- lapply(test[index], summaryTheHundred, "innings")
+
+allBatting <- summaryTheHundred(allBalls, "batting")
+allBowling <- summaryTheHundred(allBalls, "bowling")
+allInnings <- summaryTheHundred(allBalls, "innings")
+
+
+allBatting2 <- allBatting %>%
+  group_by(Batsman) %>%
+  select(-batsman) %>%
+  mutate(innings = 1) %>%
+  summarise_all(sum) %>%
+  mutate(SR = round(Runs/Balls*100, 2),
+         HS = case_when(
+           HSout == 0 ~ paste0(as.integer(HS / innings), "*"),
+           TRUE ~ paste0(as.integer(HS / innings))),
+         Ave = round(Runs / (innings - NotOut), 2)) %>%
+  select(-c(match, HSout))
+
+allBowling2 <- allBowling %>%
+  group_by(bowler) %>%
+  mutate(innings = 1) %>%
+  summarise_all(sum,) %>%
+  mutate(RPB = round(Runs/Balls, 2)) %>%
+  select(-match)
