@@ -22,7 +22,7 @@ registerDoParallel(cl)
 outLoc <- paste0("data/")
 
 #ESPN cricinfo results page for the desired tournament
-url <- "https://www.espncricinfo.com/series/ipl-2019-1165643/match-results"
+url <- "https://www.espncricinfo.com/series/icc-men-s-t20-world-cup-2021-22-1267897/match-results"
 
 #Identifier
 id <- gsub("https://www.espncricinfo.com/series/", "", gsub("/match-results", "", url))
@@ -54,11 +54,16 @@ stopImplicitCluster()
 
 saveMatchInfo(matchInfo, overwrite=TRUE)
 
-p <- as.integer(1008)
-driver <- rsDriver(browser=c("chrome"), port = p, geckover = NULL, chromever = "94.0.4606.41")
+# 
+# matchInfo <- read.fst("data/matchInfo.fst") %>%
+#   rowwise() %>%
+#   mutate(overwrite = ifelse(is.null(checkData(matchID)), FALSE, TRUE))
+
+p <- as.integer(1005)
+driver <- rsDriver(browser=c("chrome"), port = p, geckover = NULL, chromever = "latest")
 remDr <- driver[["client"]]
 
-test <- mapply(scrapeIPL, matchInfo$url, seq(1:nrow(matchInfo)), superOver=matchInfo$superOver)
+test <- mapply(scrapeIPL, matchInfo$url, seq(1:nrow(matchInfo)), superOver=matchInfo$superOver, overwrite=matchInfo$overwrite)
 
 
 matchInfo <- matchInfo %>%
@@ -80,14 +85,6 @@ for (x in c(seq(1, length(test), 3))) {
 
 
 allBalls <- rbindlist(test[index])  
-
-
-check <- matchInfo %>%
-  filter(superOver) %>%
-  select(matchID)
-
-check <- allBalls %>% semi_join(check, by="matchID") %>% group_by(matchID, innings) %>% summarise(b = n())
-
 
 
 test2 <- lapply(test[index], summaryT20, "batting")
@@ -158,7 +155,7 @@ ggplot(game, aes(x=ball2, y=cumruns, group=innings, color=team, linetype=innings
   annotate("segment", x=0, xend=0, y=-Inf, yend=Inf, size=0.5, colour="grey75") +
   labs(
     title = "Worm Charts",
-    subtitle = "All T20 World Cup Games (so far)",
+    subtitle = "All T20 World Cup Games",
     x = "Overs",
     y = "Runs"
   ) +
@@ -180,7 +177,7 @@ game2$matchDesc <- factor(game2$matchDesc, levels = rev(unique(game2$matchDesc))
 ggplot(game2, aes(x = as.factor(over), y = runs, group=paste0(innings, " ", team), fill=team)) +
   geom_col(width = 0.5, position=position_dodge2(preserve="single", padding = 0.2)) +
   theme_kantar() +
-  scale_fill_manual(breaks=teamNames, values=teamColours) +
+  teamColour(matchNames = TRUE) + #  scale_fill_manual(breaks=teamNames, values=teamColours) +
   theme(
     # legend.position = "bottom",
     panel.grid.major.y = element_line(colour="grey95")
@@ -194,7 +191,7 @@ ggplot(game2, aes(x = as.factor(over), y = runs, group=paste0(innings, " ", team
   # xlim(c(0,20)) +
   labs(
     title = "Manhattan Charts",
-    subtitle = "All T20 World Cup Games (so far)",
+    subtitle = "All T20 World Cup Games",
     x = "Over",
     y = "Runs"
   ) +
@@ -204,7 +201,7 @@ ggplot(game2, aes(x = as.factor(over), y = runs, group=paste0(innings, " ", team
 ggplot(game2, aes(x = over, y = crr, colour=team)) +
   geom_line() +
   theme_kantar() +
-  scale_colour_manual(breaks=teamNames, values=teamColours) +
+  teamColour(matchNames = TRUE) + #scale_colour_manual(breaks=teamNames, values=teamColours) +
   theme(
     # legend.position = "bottom",
     panel.grid.major.y = element_line(colour="grey95")
@@ -217,7 +214,7 @@ ggplot(game2, aes(x = over, y = crr, colour=team)) +
   # xlim(c(0,20)) +
   labs(
     title = "Rute Rate Charts",
-    subtitle = "All T20 World Cup Games (so far)",
+    subtitle = "All T20 World Cup Games",
     x = "Over",
     y = "Runs"
   ) +

@@ -487,7 +487,7 @@ parseData <- function(match, matchID, index, teams, batFirst, batting_summary, b
     group_by(innings) %>%
     mutate(end_row = ifelse(is.na(end_row), max(last_faced), end_row)) %>%
     arrange(innings, battingOrder) %>%
-    mutate(start_row = ifelse(is.na(lag(start_row, 2)), 1, cumrank(end_row, 2) + 1),
+    mutate(start_row = ifelse(is.na(lag(start_row, 2)), 1, cumulativeRank(end_row, 2) + 1),
            prev_end_row = lag(end_row), 
            prev_end_row2 = lag(end_row, 2),
            cum_end_row_max = lag(cummax(end_row))) %>%

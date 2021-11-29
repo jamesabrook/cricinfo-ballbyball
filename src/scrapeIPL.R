@@ -115,222 +115,11 @@ getMatchInfo <- function(x) {
   return(details)
 }
 
-dealWithCookies <- function(cookiesDeclined = FALSE) {
-  #Deal with cookies
-
-  #Locate the cookies button
-  cookieButton <- try(remDr$findElement(using = 'xpath', '//*[@id="onetrust-close-btn-container"]/button'),
-                      silent = TRUE)
-  
-  if(class(cookieButton) != "try-error") {
-    cookieButton$clickElement()
-    cookiesDeclined <- TRUE
-  }
-  
-  Sys.sleep(2)
-  
-  return(cookiesDeclined)
-}
-
-declineLiveUpdates <- function(notNowClicked = FALSE) {
-  # CricInfo now has an annoying popup asking if we want live updates. 
-  # This is a flag of if we have dismissed it or not
-  # Wait until the button appears to dismiss it and then click it
-  tryCatch(expr = {
-    notNowUpdates <- remDr$findElement(using = 'xpath', '//*[@id="wzrk-cancel"]')
-    if(class(notNowUpdates) != "try-error") {
-      notNowUpdates$clickElement()
-      notNowClicked <- TRUE
-    }
-    Sys.sleep(2)
-  },
-  error = function(e) {
-    message("Waiting for live update popup...")
-    Sys.sleep(2)
-  })
-  
-  return(notNowClicked)
-}
-
-scrapeInnings <- function(inn) {
-  #Locates the innings selection dropdown
-  inningsDropdown <- remDr$findElement(using = 'class',
-                                       'comment-inning-dropdown')
-  
-  #Scroll to top of page - mostly so that I can check the innings selection
-  remDr$executeScript(paste("scroll(0,",0,");"))
-  
-  # Sys.sleep(1)
-  #Open dropdown
-  inningsDropdown$clickElement()
-  
-  Sys.sleep(1)
-  message(inn)
-  #Find the element referring to the innings we want
-  #We need to use the xpath for this as it has no other identifying tags
-  inningsSelection <- remDr$findElement(using = 'xpath', 
-                                        paste0('//*[@id="main-container"]/div[1]/div/div/div[2]/div[2]/div[1]/div[1]/div/div/div/ul/li[', inn, ']'))
-  
-  inningsSelection$clickElement()
-  
-  #remDr$screenshot(display = TRUE) #This will take a screenshot and display it in the RStudio viewer
-  
-  #We need to scroll to make sure every ball is visible on the page
-  firstBall <- FALSE #Have we found the first ball of the innings
-  pass <- 0 #Counts our passes through the loop
-  earliest <- NULL #Earliest ball found so far
-  while(firstBall == FALSE) {
-    #Update our previously found earliest ball
-    prev <- earliest 
-    
-    #Send a keypress of the end key to jump to the bottom of the page
-    #This causes the page to add in more commentary of earlier balls
-    body <- remDr$findElement("css", "body")
-    body$sendKeysToElement(list(key = "end"))
-    
-    Sys.sleep(3)
-    
-    #Read the page source and extract the ball information
-    #Filtering to ball 0.1 means we keep only the first ball if found
-    ball <- xml2::read_html(remDr$getPageSource()[[1]]) %>%
-      rvest::html_nodes("span.match-comment-over") %>%
-      rvest::html_text() %>%
-      dplyr::tibble(ball = .) %>%
-      dplyr::filter(ball == "0.1")
-    
-    if(nrow(ball) > 0) {
-      firstBall = TRUE
-      break #Exit the loop
-    }
-    
-    #I found that sometimes the page would freeze up on my and stop adding earlier balls
-    #This is some logic to detect when the earliest ball found hasn't changed
-    #If this is the case then we refresh the page and reselect the innings commentary
-    
-    #What is the earliest ball found
-    earliest <- xml2::read_html(remDr$getPageSource()[[1]]) %>%
-      rvest::html_nodes("span.match-comment-over") %>%
-      rvest::html_text() %>%
-      dplyr::tibble(ball = .) %>%
-      slice(nrow(.))
-    
-    
-    #If we are on the first pass we need prev not to be NULL
-    #Otherwise the if statement later fails
-    if (pass == 0) {
-      prev <- earliest
-    }
-    
-    #On subsequent passes check if the earliest ball hasn't changed
-    if (pass > 10) {
-      print(pass)
-      print(earliest)
-      print(prev)
-      if(earliest == prev) {
-        message("Refreshing...")
-        match <- NULL
-        #If the page stops adding new deliveries then refresh and reselect the innings
-        remDr$refresh()
-        Sys.sleep(5)
-        inningsDropdown <- remDr$findElement(using = 'xpath',
-                                             '//*[@id="main-container"]/div[1]/div/div/div[2]/div[2]/div[1]/div[1]/div')
-        
-        inningsDropdown$clickElement()
-        
-        Sys.sleep(2)
-        inningsSelection <- remDr$findElement(using = 'xpath', 
-                                              paste0('//*[@id="main-container"]/div[1]/div/div/div[2]/div[2]/div[1]/div[1]/div/div/div/ul/li[', inn, ']'))
-        
-        
-        inningsSelection$clickElement()
-      }
-    }
-    
-    pass <- pass + 1
-  }
-  
-  #Continue once we have all deliveries on the page
-  
-  #Read the page source and extract all ball  info
-  pageSource <- xml2::read_html(remDr$getPageSource()[[1]])
-  balls <- pageSource %>%
-    rvest::html_nodes("span.match-comment-over") %>%
-    rvest::html_text() %>%
-    base::data.frame(ball = .) 
-  
-  #We can also extract the events that occurred on each ball
-  #This only captures the 'main' event (i.e. wickets take priority over runs)
-  events <- pageSource %>%
-    rvest::html_nodes(".match-comment-run-container") %>%
-    rvest::html_text() %>%
-     base::data.frame(event = .) %>%
-    dplyr::mutate(event = ifelse(event == "•", ".", event))
-  
-  #We can extract the short descrption for each delivery
-  shortDesc <- pageSource %>%
-    rvest::html_nodes(".match-comment-short-text") %>%
-    rvest::html_text() %>%
-     base::data.frame(shortDesc = .)
-  
-  shortRuns <- pageSource %>%
-    rvest::html_nodes(".comment-short-run") %>%
-    rvest::html_text() %>%
-     base::data.frame(shortRuns = .)
-  
-  #Finally a full text description of the outcome of the delivery
-  fullDesc <- pageSource %>%
-    rvest::html_nodes(".match-comment-wrapper") %>%
-    rvest::html_text() %>%
-     base::data.frame(fullDesc = .)
-  
-  #Also extract wicket descriptions so that we can accurately determine which batsman was out
-  #In run-outs we don't know if it was the striker or non-striker
-  wicketDesc <- pageSource %>%
-    rvest::html_nodes(".match-comment-wicket-no-icon") %>%
-    rvest::html_text() %>%
-     base::data.frame(wicketDesc = .) 
-  
-  if(nrow(wicketDesc) > 0) { 
-    wicketDesc <- wicketDesc %>%
-      dplyr::mutate(wicket = seq(1:n()),
-             innings = inn)
-    
-    #Our innings data is the combination of these four dataframes
-    innings <- cbind(balls, events, shortDesc, shortRuns, fullDesc) %>%
-      dplyr::mutate(ball = as.numeric(ball)) %>%
-      dplyr::arrange(ball) %>%
-      rowwise() %>%
-      dplyr::mutate(innings = inn,
-                    w = ifelse(event == "W" | grepl("OUT", shortDesc), 1, 0)) %>%
-      dplyr::ungroup() %>%
-      dplyr::mutate(wicket = ifelse(event == "W" | grepl("OUT", shortDesc), sum(w) - cumsum(w) + 1, 0)) %>%
-      dplyr::select(-w) %>%
-      dplyr::left_join(wicketDesc, by=c("innings", "wicket"))
-  } else {
-    #Our innings data is the combination of these four dataframes
-    innings <- cbind(balls, events, shortDesc, shortRuns, fullDesc) %>%
-      dplyr::mutate(ball = as.numeric(ball)) %>%
-      dplyr::arrange(ball) %>%
-      dplyr::mutate(innings = inn,
-                    wicket= 0,
-                    wicketDesc = NA) 
-  }
-  
-  if (inn == 3) {
-    innings <- innings %>%
-      dplyr::group_by(ball) %>%
-      dplyr::mutate(innings = innings + (2 - seq(1:n()))) %>%
-      dplyr::arrange(innings, ball)
-  }
-  
-  return(list(innings))
-}
-
 parseData <- function(match, matchID, index, teams, batFirst, batting_summary, bowling_summary) {
   match <- match %>%
     mutate(team = case_when(
       innings %in% c(1, 4) ~ teams[2 - batFirst$team],
-      TRUE ~ teams[1 + batFirst$team])
+      TRUE ~ teams[1 + batFirst$team]),
     ) %>%
     group_by(ball, fullDesc) %>%
     mutate(
@@ -338,6 +127,11 @@ parseData <- function(match, matchID, index, teams, batFirst, batting_summary, b
       fullDesc = gsub(shortDesc, paste0(shortDesc, "\n "), fullDesc),
       #Extract the bowler's name from the short description
       bowler = gsub("([A-z \\'\\-]+) to.*", "\\1", shortDesc),
+      #Also try and extract a second copy of this name with initial if it exists
+      bowler2 = case_when(
+        ball == "0.1" ~ gsub(paste0(".*?([A-Z] ", bowler, ") .*"), "\\1", all),
+        grepl("\\W1", ball) ~ gsub(paste0(".*([A-Z] ", bowler, ") .*"), "\\1", all),
+        TRUE ~ ""),
       #Extract the batsman's name from the short description
       batsman = gsub("([A-z \\-]+),.*", "\\1", sub("[A-z \\'\\-]+ to ([A-z ,]+)", "\\1", shortDesc)),
       #Ensure the ball is numeric
@@ -442,8 +236,6 @@ parseData <- function(match, matchID, index, teams, batFirst, batting_summary, b
     group_by(innings) %>%
     mutate(row = seq(1:n())) 
   
-  
-  
   #Wickets to fall in the match
   w <- match %>%
     filter(event == "W" | grepl("OUT", shortDesc)) %>%
@@ -506,6 +298,42 @@ parseData <- function(match, matchID, index, teams, batFirst, batting_summary, b
               `4s` = sum(batting_runs == 4 & shortDesc %like% "FOUR"), #Catch in case the four wasn't a boundary
               `6s` = sum(batting_runs == 6 & shortDesc %like% "SIX"))
   
+  #Does anyone have too many balls bowled?
+  ballsBowledTest <- ballsBowled %>% filter(Overs > 4)
+  if (nrow(ballsBowledTest) > 0) {
+    bowlers <- unique(ballsBowledTest$bowler)
+    matchTest <- match %>% 
+      filter(bowler %in% bowlers & bowler2 != "") %>%
+      rowwise() %>%
+      mutate(ambiguous = !grepl(paste0("[A-Z] ", bowler), bowler2)) %>%
+      ungroup() %>%
+      mutate(#If it's still ambiguous we know that there is either a change of bowler 
+             #when we are in consecutive overs, or no change for non-consecutive overs?
+             bowler3 = case_when(
+               ambiguous == TRUE & ball - lag(ball) == 1 ~ lag(bowler2, 2),
+               ambiguous == TRUE ~ lag(bowler2, 1),
+               TRUE ~ bowler2),
+             over = floor(ball)
+      ) %>%
+      select(innings, over, bowler3)
+    
+    match <- match %>%
+      mutate(over = floor(ball)) %>%
+      left_join(matchTest, by=c("innings", "over")) %>%
+      mutate(bowler = ifelse(!is.na(bowler3), bowler3, bowler)) %>%
+      select(-over)
+  }
+  
+  ballsBowled <- match %>%
+    group_by(innings, bowler) %>%
+    summarise(Innings = first(innings),
+              Runs = sum(bowling_runs),
+              Balls = sum(legalBall),
+              Overs = floor(Balls/6) + (Balls %% 6 / 10),
+              `0s` = sum(bowling_runs == 0),
+              `4s` = sum(batting_runs == 4 & shortDesc %like% "FOUR"), #Catch in case the four wasn't a boundary
+              `6s` = sum(batting_runs == 6 & shortDesc %like% "SIX"))
+  
   batting_summary <- batting_summary %>%
     group_by(Innings) %>%
     mutate(battingOrder = seq(1:n()))
@@ -546,7 +374,8 @@ parseData <- function(match, matchID, index, teams, batFirst, batting_summary, b
     group_by(innings, bowler) %>%
     mutate(rows = n()) %>%
     rowwise() %>%
-    filter(rows == 1 | grepl(bowler, Bowler))
+    mutate(bowler2 = gsub("^([A-Z] )", "", bowler)) %>%
+    filter(rows == 1 | grepl(bowler, Bowler) | grepl(bowler2, Bowler))
   
   
   
@@ -640,8 +469,7 @@ parseData <- function(match, matchID, index, teams, batFirst, batting_summary, b
 scrapeIPL <- function(x, index, superOver=FALSE, cookiesDeclined=FALSE, notNowClicked=FALSE, overwrite=FALSE) {
   
   #matchID for the game in question
-  # url <- paste0("https://www.espncricinfo.com", x)
-  url <- x
+  url <- paste0("https://www.espncricinfo.com", x)
   matchID <- gsub("-", "", substr(url, nchar(url) - 21, nchar(url)-15))
   
   #output file(s)
@@ -657,9 +485,6 @@ scrapeIPL <- function(x, index, superOver=FALSE, cookiesDeclined=FALSE, notNowCl
   #If we need to overwrite the data or scrape if it doesn't exist already
   if(overwrite | !file.exists(file1)) {
     print(paste0("Index: ", index))
-    # cookiesDeclined <- FALSE
-    # notNowClicked <- FALSE
-    
     
     #Read the raw html data
     raw <- try(xml2::read_html(url), silent = TRUE)
@@ -691,8 +516,8 @@ scrapeIPL <- function(x, index, superOver=FALSE, cookiesDeclined=FALSE, notNowCl
                            silent=TRUE)
     
     
-    bowling_summary <- try(setDT(rbind(setDT(tables[[2]])[, innings:=1], 
-                                       setDT(tables[[4]])[, innings:=2])),
+    bowling_summary <- try(setDT(rbind(setDT(tables[[2]][, 1:11])[, innings:=1], 
+                                       setDT(tables[[4]][, 1:11])[, innings:=2])),
                            silent=TRUE)
     
     matchInfo <- try(setDT(tables[[5]]), silent=TRUE) 
@@ -747,8 +572,26 @@ scrapeIPL <- function(x, index, superOver=FALSE, cookiesDeclined=FALSE, notNowCl
       }
       match <- rbindlist(mapply(scrapeInnings, innList))
       
+      #Manual fix
+      # t <- data.frame(
+      #   ball = 15.4,
+      #   event = ".",
+      #   shortDesc = "Shakib to Chase, no run",
+      #   shortRuns = "no run",
+      #   fullDesc = "Shakib to Chase, no runPunched back to the bowler",
+      #   all = "15.4•Shakib to Chase, no runPunched back to the bowler",
+      #   innings = 1,
+      #   wicket = 0,
+      #   wicketDesc = NA
+      # )
+
+      match <- rbind(match, t)
+      
       #Parse extra details
       match <- parseData(match, matchID, index, teams, batFirst, batting_summary, bowling_summary)
+      
+      # match <- match %>%
+      #   mutate(Bowler = ifelse(bowler == "Shakib", "Shakib Al Hasan", Bowler))
       
       write.fst(match, file1)
       write.fst(batting_summary, file2)
