@@ -59,7 +59,7 @@ parseData <- function(match, matchID, index, teams, batFirst, batting_summary, b
       #Extract the number of runs scored
       runs = case_when(
         event %in% c(".") ~ 0,
-        event %in% c("W") ~ as.integer(runsCheck), #Here we use the runsCheck column to ensure we capture all runs scored
+        event %in% c("W") ~ as.double(runsCheck), #Here we use the runsCheck column to ensure we capture all runs scored
         grepl("1", event) ~ 1,
         grepl("2", event) ~ 2,
         grepl("3", event) ~ 3,
@@ -189,7 +189,8 @@ parseData <- function(match, matchID, index, teams, batFirst, batting_summary, b
   #Does anyone have too many balls bowled?
   #This is probably not correct atm!
   ballsBowledTest <- ballsBowled %>% filter(Balls > 20)
-  if (nrow(ballsBowledTest) > 0) {
+  ballsBowledTest2 <- nrow(ballsBowled) == nrow(bowling_summary)
+  if (nrow(ballsBowledTest) > 0 ) {
     bowlers <- unique(ballsBowledTest$bowler)
     matchTest <- match %>%
       filter(bowler %in% bowlers & bowler2 != "") %>%
@@ -209,6 +210,32 @@ parseData <- function(match, matchID, index, teams, batFirst, batting_summary, b
     match <- match %>%
       left_join(matchTest, by=c("innings", "ball")) %>%
       mutate(bowler = ifelse(!is.na(bowler4), bowler4, bowler))
+  } else if (!ballsBowledTest2) {
+    bowling_summary2 <- merge(ballsBowled, bowling_summary, by=c("Innings", "Runs", "Balls", "Dots", "4s", "6s"))
+    
+    bowlers <- unique(match$bowler) %>%
+      data.frame(bowler = .) %>%
+      anti_join(bowling_summary2, by="bowler")
+    
+    matchTest <- match %>%
+      filter(bowler %in% bowlers & bowler2 != "") %>%
+      rowwise() %>%
+      mutate(ambiguous = !grepl(paste0("[A-Z] ", bowler), bowler2)) %>%
+      ungroup() %>%
+      mutate(#If it's still ambiguous we know that there is either a change of bowler
+        #when we are in consecutive overs, or no change for non-consecutive overs?
+        bowler4 = case_when(
+          ambiguous == TRUE & ball - lag(ball) == 1 ~ lag(bowler2, 2),
+          ambiguous == TRUE ~ lag(bowler2, 1),
+          TRUE ~ bowler2)
+      ) %>%
+      group_by(innings, ball, bowler4) %>%
+      summarise()
+    
+    match <- match %>%
+      left_join(matchTest, by=c("innings", "ball")) %>%
+      mutate(bowler = ifelse(!is.na(bowler4), bowler4, bowler))
+    
   }
   
   ballsBowled <- match %>%
@@ -357,7 +384,7 @@ scrapeTheHundred <- function(x, index, superOver=FALSE, cookiesDeclined=FALSE, n
   
   
   #matchID for the game in question
-  # url <- matchInfo$url[11]
+  # url <- matchInfo$url[19]
   url <- x
   matchID <- gsub("-", "", substr(url, nchar(url) - 21, nchar(url)-15))
   

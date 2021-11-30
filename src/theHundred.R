@@ -54,7 +54,7 @@ matchInfo[is.na(ballsPerOver), ballsPerOver:=5]
 stopImplicitCluster()
 
 
-p <- as.integer(4009)
+p <- as.integer(4006)
 driver <- rsDriver(browser=c("chrome"), port = p, geckover = NULL, chromever = "96.0.4664.45")
 remDr <- driver[["client"]]
 
@@ -66,6 +66,24 @@ matchInfo <- matchInfo %>%
 
 saveMatchInfo(matchInfo, overwrite=TRUE)
 
-theHundredMens <- importSeries("The Hundred Men's Competition")
+theHundredWomens <- importSeries("The Hundred Women's Competition")
 
-checkDataHundred(1252707)
+battingInnings <- summaryTheHundred(theHundredWomens, "batting")
+battingTotal <- battingInnings %>%
+  group_by(batsman, Batsman) %>%
+  arrange(desc(Runs)) %>%
+  summarise(Runs = sum(Runs),
+            Balls = sum(Balls),
+            `4s` = sum(`4s`),
+            `6s` = sum(`6s`),
+            `100` = sum(`100`),
+            `50` = sum(`50`),
+            `0` = sum(`0`),
+            NotOut = sum(NotOut),
+            HSText = first(HSText)) %>%
+  mutate(SR = Runs / Balls * 100) %>%
+  arrange(desc(Runs))
+
+manhattanChart(theHundredWomens)
+
+

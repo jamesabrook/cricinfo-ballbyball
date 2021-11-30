@@ -1092,6 +1092,8 @@ importSeries <- function(series) {
   })
 }
 
+#Needs fixing to be able to run either the Hundred or a T20/ODI
+#Currently set to run the charts for the Hundred
 manhattanChart <- function(match) {
   
   title = "Manhattan Chart"
@@ -1099,18 +1101,18 @@ manhattanChart <- function(match) {
   numMatches <- length(unique(match$matchID))
   if(numMatches == 1) {
     match <- match %>%
-      dplyr::mutate(over = floor(ball) + 1) %>%
-      dplyr::group_by(matchID, innings, team, over) %>%
+      dplyr::mutate(set = floor((ball - 1)/5) + 1) %>%
+      dplyr::group_by(matchID, innings, team, set) %>%
       dplyr::summarise(runs = sum(runs)) %>%
       dplyr::group_by(matchID) %>%
-      dplyr::mutate(crr = runs / over,
+      dplyr::mutate(crr = runs / set,
                     matchDesc = paste0(first(team), " v ", last(team)))
     
     subtitle <- unique(match$matchDesc)
     
     match$matchDesc <- factor(match$matchDesc, levels = rev(unique(match$matchDesc)))
     
-    manhattan <- ggplot(match, aes(x = as.factor(over), y = runs, group=paste0(innings, " ", team), fill=team)) +
+    manhattan <- ggplot(match, aes(x = as.factor(set), y = runs, group=paste0(innings, " ", team), fill=team)) +
       geom_col(width = 0.5, position=position_dodge2(preserve="single", padding = 0.2)) +
       theme_kantar() +
       teamFill(matchNames = TRUE) + 
@@ -1127,18 +1129,18 @@ manhattanChart <- function(match) {
       ) 
   } else {
     match <- match %>%
-      dplyr::mutate(over = floor(ball) + 1) %>%
-      dplyr::group_by(matchID, innings, team, over) %>%
+      dplyr::mutate(set = floor((ball - 1)/5) + 1) %>%
+      dplyr::group_by(matchID, innings, team, set) %>%
       dplyr::summarise(runs = sum(runs)) %>%
       dplyr::group_by(matchID) %>%
-      dplyr::mutate(crr = runs / over,
+      dplyr::mutate(crr = runs / set,
                     matchDesc = paste0(matchID, " - ", first(team), " v ", last(team)))
     
     subtitle <- "Selected Games"
     
     match$matchDesc <- factor(match$matchDesc, levels = rev(unique(match$matchDesc)))
     
-    manhattan <- ggplot(match, aes(x = as.factor(over), y = runs, group=paste0(innings, " ", team), fill=team)) +
+    manhattan <- ggplot(match, aes(x = as.factor(set), y = runs, group=paste0(innings, " ", team), fill=team)) +
       geom_col(width = 0.5, position=position_dodge2(preserve="single", padding = 0.2)) +
       theme_kantar() +
       teamFill(matchNames = TRUE) + 
