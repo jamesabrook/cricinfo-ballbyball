@@ -212,7 +212,7 @@ saveMatchInfo <- function(matchInfo, outLoc="data/", filename="matchInfo.fst", o
 
 #Declines cookies when the popup asks for it
 #Otherwise the popup intefers
-dealWithCookies <- function(cookiesDeclined = FALSE) {
+dealWithCookies <- function(cookiesDeclined = FALSE, sleep = 2) {
   #Deal with cookies
   
   #Locate the cookies button
@@ -224,14 +224,14 @@ dealWithCookies <- function(cookiesDeclined = FALSE) {
     cookiesDeclined <- TRUE
   }
   
-  Sys.sleep(2)
+  Sys.sleep(sleep)
   
   return(cookiesDeclined)
 }
 
 #Declines live updates when the popup asks for it
 #Otherwise the popup intefers
-declineLiveUpdates <- function(notNowClicked = FALSE) {
+declineLiveUpdates <- function(notNowClicked = FALSE, sleep = 2) {
   # CricInfo now has an annoying popup asking if we want live updates. 
   # This is a flag of if we have dismissed it or not
   # Wait until the button appears to dismiss it and then click it
@@ -241,11 +241,11 @@ declineLiveUpdates <- function(notNowClicked = FALSE) {
       notNowUpdates$clickElement()
       notNowClicked <- TRUE
     }
-    Sys.sleep(2)
+    Sys.sleep(sleep)
   },
   error = function(e) {
     message("Waiting for live update popup...")
-    Sys.sleep(2)
+    Sys.sleep(sleep*5)
   })
   
   return(notNowClicked)
@@ -472,7 +472,7 @@ cumulativeRank <- function(x, k){
 }
 
 #Extracts useful information from the scraped data
-parseData <- function(match, matchID, index, teams, batFirst, batting_summary, bowling_summary) {
+parseData_old <- function(match, matchID, index, teams, batFirst, batting_summary, bowling_summary) {
   match <- match %>%
     dplyr::mutate(team = case_when(
       innings %in% c(1, 4) ~ teams[2 - batFirst$team],
@@ -963,6 +963,7 @@ summaryTheHundred <- function(x, type=c("batting", "bowling", "innings")) {
 }
 
 #Checks ball by ball data against the known batting/bowling card
+# matchID <- 249222
 checkDataT20 <- function(matchID) {
   try({
     match <- read.fst(paste0("data/ball-by-ball/", matchID, ".fst"), as.data.table=TRUE)
@@ -978,7 +979,7 @@ checkDataT20 <- function(matchID) {
              Bowler = ifelse(grepl("[A-z]", substr(Bowler, nchar(Bowler), nchar(Bowler))), Bowler, substr(Bowler, 1, nchar(Bowler) - 1)))
     
     #Check stats for batsman we successfully matched against the data
-    batting_test <- merge(summaryT20(match, type="batting"), batting_summary, by="Batsman", sort=FALSE) %>%
+    batting_test <- merge(summaryT20(match, type="batting"), batting_summary, by.x=c("innings", "Batsman"), by.y=c("Innings", "Batsman"), sort=FALSE) %>%
       mutate(check_runs = ifelse(as.numeric(Runs.x) == as.numeric(Runs.y), 1, 0),
              check_balls = ifelse(as.numeric(Balls.x) == as.numeric(Balls.y), 1, 0),
              check_4s = ifelse(as.numeric(`4s.x`) == as.numeric(`4s.y`), 1, 0),
@@ -990,7 +991,7 @@ checkDataT20 <- function(matchID) {
     batting_test2 <- batting_test2 | nrow(batting_summary[Balls != ""]) == nrow(batting_test)
     
     #Check stats for bowlers we successfully matched against the data
-    bowling_test <- merge(summaryT20(match, type="bowling"), bowling_summary, by="Bowler", sort=FALSE) %>%
+    bowling_test <- merge(summaryT20(match, type="bowling"), bowling_summary, by.x=c("innings", "Bowler"), by.y=c("Innings", "Bowler"), sort=FALSE) %>%
       mutate(check_runs = ifelse(as.numeric(Runs.x) == as.numeric(Runs.y), 1, 0),
              check_overs = ifelse(as.numeric(Overs.x) == as.numeric(Overs.y), 1, 0),
              check_wickets = ifelse(as.numeric(Wickets.x) == as.numeric(Wickets.y), 1, 0),
@@ -1076,15 +1077,21 @@ checkDataHundred <- function(matchID) {
   error = function(e) { return(NULL) }, silent=TRUE)
 }
 
+#Returns the ball-by-ball data for a given matchID
+importMatch <- function(matchID) {
+  return(read.fst(paste0("data/ball-by-ball/", matchID, ".fst")))
+}
+
 #Combine all balls from a particular series
-importSeries <- function(series) {
+importSeries <- function(s) {
   matchIDs <- read.fst("data/matchInfo.fst") %>%
-    dplyr::filter(series1 == series | series2 == series) %>%
+    dplyr::filter(series1 == s | series2 == s) %>%
     dplyr::filter(!grepl("abandoned|No result", result)) %>%
     dplyr::select(matchID)
   
   tryCatch({
-    balls <- lapply(paste0("data/ball-by-ball/", matchIDs$matchID, ".fst"), read.fst)
+    balls <- lapply(matchIDs$matchID, importMatch)
+    # balls <- lapply(paste0("data/ball-by-ball/", matchIDs$matchID, ".fst"), read.fst)
     return(data.table::rbindlist(balls))
   },
   error = function(e) { 
@@ -1094,69 +1101,129 @@ importSeries <- function(series) {
 
 #Needs fixing to be able to run either the Hundred or a T20/ODI
 #Currently set to run the charts for the Hundred
-manhattanChart <- function(match) {
+manhattanChart <- function(match, hundred=FALSE) {
   
   title = "Manhattan Chart"
   
   numMatches <- length(unique(match$matchID))
-  if(numMatches == 1) {
-    match <- match %>%
-      dplyr::mutate(set = floor((ball - 1)/5) + 1) %>%
-      dplyr::group_by(matchID, innings, team, set) %>%
-      dplyr::summarise(runs = sum(runs)) %>%
-      dplyr::group_by(matchID) %>%
-      dplyr::mutate(crr = runs / set,
-                    matchDesc = paste0(first(team), " v ", last(team)))
-    
-    subtitle <- unique(match$matchDesc)
-    
-    match$matchDesc <- factor(match$matchDesc, levels = rev(unique(match$matchDesc)))
-    
-    manhattan <- ggplot(match, aes(x = as.factor(set), y = runs, group=paste0(innings, " ", team), fill=team)) +
-      geom_col(width = 0.5, position=position_dodge2(preserve="single", padding = 0.2)) +
-      theme_kantar() +
-      teamFill(matchNames = TRUE) + 
-      theme(
-        panel.grid.major.y = element_line(colour="grey95")
-      ) +
-      scale_y_continuous(limits=c(0, ceiling(max(match$runs)/5)*5)) +
-      annotate("segment", x=-Inf, xend=Inf, y=0, yend=0, size=0.5, colour="grey75") +
-      labs(
-        title = title,
-        subtitle = subtitle,
-        x = "Over",
-        y = "Runs"
-      ) 
+  if(hundred == TRUE) {
+    if(numMatches == 1) {
+      match <- match %>%
+        dplyr::mutate(set = floor((ball - 1)/5) + 1) %>%
+        dplyr::group_by(matchID, innings, team, set) %>%
+        dplyr::summarise(runs = sum(runs)) %>%
+        dplyr::group_by(matchID) %>%
+        dplyr::mutate(crr = runs / set,
+                      matchDesc = paste0(first(team), " v ", last(team)))
+      
+      subtitle <- unique(match$matchDesc)
+      
+      match$matchDesc <- factor(match$matchDesc, levels = rev(unique(match$matchDesc)))
+      
+      manhattan <- ggplot(match, aes(x = as.factor(set), y = runs, group=paste0(innings, " ", team), fill=team)) +
+        geom_col(width = 0.5, position=position_dodge2(preserve="single", padding = 0.2)) +
+        theme_kantar() +
+        teamFill(matchNames = TRUE) + 
+        theme(
+          panel.grid.major.y = element_line(colour="grey95")
+        ) +
+        scale_y_continuous(limits=c(0, ceiling(max(match$runs)/5)*5)) +
+        annotate("segment", x=-Inf, xend=Inf, y=0, yend=0, size=0.5, colour="grey75") +
+        labs(
+          title = title,
+          subtitle = subtitle,
+          x = "Over",
+          y = "Runs"
+        ) 
+    } else {
+      match <- match %>%
+        dplyr::mutate(set = floor((ball - 1)/5) + 1) %>%
+        dplyr::group_by(matchID, innings, team, set) %>%
+        dplyr::summarise(runs = sum(runs)) %>%
+        dplyr::group_by(matchID) %>%
+        dplyr::mutate(crr = runs / set,
+                      matchDesc = paste0(matchID, " - ", first(team), " v ", last(team)))
+      
+      subtitle <- "Selected Games"
+      
+      match$matchDesc <- factor(match$matchDesc, levels = rev(unique(match$matchDesc)))
+      
+      manhattan <- ggplot(match, aes(x = as.factor(set), y = runs, group=paste0(innings, " ", team), fill=team)) +
+        geom_col(width = 0.5, position=position_dodge2(preserve="single", padding = 0.2)) +
+        theme_kantar() +
+        teamFill(matchNames = TRUE) + 
+        theme(
+          panel.grid.major.y = element_line(colour="grey95")
+        ) +
+        scale_y_continuous(limits=c(0, ceiling(max(match$runs)/5)*5)) +
+        annotate("segment", x=-Inf, xend=Inf, y=0, yend=0, size=0.5, colour="grey75") +
+        labs(
+          title = title,
+          subtitle = subtitle,
+          x = "Over",
+          y = "Runs"
+        ) +
+        facet_wrap(~matchDesc)
+    }
   } else {
-    match <- match %>%
-      dplyr::mutate(set = floor((ball - 1)/5) + 1) %>%
-      dplyr::group_by(matchID, innings, team, set) %>%
-      dplyr::summarise(runs = sum(runs)) %>%
-      dplyr::group_by(matchID) %>%
-      dplyr::mutate(crr = runs / set,
-                    matchDesc = paste0(matchID, " - ", first(team), " v ", last(team)))
-    
-    subtitle <- "Selected Games"
-    
-    match$matchDesc <- factor(match$matchDesc, levels = rev(unique(match$matchDesc)))
-    
-    manhattan <- ggplot(match, aes(x = as.factor(set), y = runs, group=paste0(innings, " ", team), fill=team)) +
-      geom_col(width = 0.5, position=position_dodge2(preserve="single", padding = 0.2)) +
-      theme_kantar() +
-      teamFill(matchNames = TRUE) + 
-      theme(
-        panel.grid.major.y = element_line(colour="grey95")
-      ) +
-      scale_y_continuous(limits=c(0, ceiling(max(match$runs)/5)*5)) +
-      annotate("segment", x=-Inf, xend=Inf, y=0, yend=0, size=0.5, colour="grey75") +
-      labs(
-        title = title,
-        subtitle = subtitle,
-        x = "Over",
-        y = "Runs"
-      ) +
-      facet_wrap(~matchDesc)
+    if(numMatches == 1) {
+      match <- match %>%
+        dplyr::group_by(matchID, innings, team, over) %>%
+        dplyr::summarise(runs = sum(runs)) %>%
+        dplyr::group_by(matchID) %>%
+        dplyr::mutate(crr = runs / over,
+                      matchDesc = paste0(first(team), " v ", last(team)))
+      
+      subtitle <- unique(match$matchDesc)
+      
+      match$matchDesc <- factor(match$matchDesc, levels = rev(unique(match$matchDesc)))
+      
+      manhattan <- ggplot(match, aes(x = as.factor(over), y = runs, group=paste0(innings, " ", team), fill=team)) +
+        geom_col(width = 0.5, position=position_dodge2(preserve="single", padding = 0.2)) +
+        theme_kantar() +
+        teamFill(matchNames = TRUE) + 
+        theme(
+          panel.grid.major.y = element_line(colour="grey95")
+        ) +
+        scale_y_continuous(limits=c(0, ceiling(max(match$runs)/5)*5)) +
+        annotate("segment", x=-Inf, xend=Inf, y=0, yend=0, size=0.5, colour="grey75") +
+        labs(
+          title = title,
+          subtitle = subtitle,
+          x = "Over",
+          y = "Runs"
+        ) 
+    } else {
+      match <- match %>%
+        dplyr::group_by(matchID, innings, team, over) %>%
+        dplyr::summarise(runs = sum(runs)) %>%
+        dplyr::group_by(matchID) %>%
+        dplyr::mutate(crr = runs / over,
+                      matchDesc = paste0(matchID, " - ", first(team), " v ", last(team)))
+      
+      subtitle <- "Selected Games"
+      
+      match$matchDesc <- factor(match$matchDesc, levels = rev(unique(match$matchDesc)))
+      
+      manhattan <- ggplot(match, aes(x = as.factor(over), y = runs, group=paste0(innings, " ", team), fill=team)) +
+        geom_col(width = 0.5, position=position_dodge2(preserve="single", padding = 0.2)) +
+        theme_kantar() +
+        teamFill(matchNames = TRUE) + 
+        theme(
+          panel.grid.major.y = element_line(colour="grey95")
+        ) +
+        scale_y_continuous(limits=c(0, ceiling(max(match$runs)/5)*5)) +
+        annotate("segment", x=-Inf, xend=Inf, y=0, yend=0, size=0.5, colour="grey75") +
+        labs(
+          title = title,
+          subtitle = subtitle,
+          x = "Over",
+          y = "Runs"
+        ) +
+        facet_wrap(~matchDesc)
+    }
   }
+    
   return(manhattan)
 }
 
